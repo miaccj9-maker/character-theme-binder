@@ -1,0 +1,95 @@
+/* ============================================================
+   角色主题绑定扩展 - 样式表 v1.1.1
+   面板全部使用酒馆原生组件类（inline-drawer / menu_button /
+   checkbox_label / text_pole），配色直接继承主题 CSS 变量，
+   观感与原生扩展一致，跟随主题美化：
+   - 无 JS 合成色，无 backdrop-filter，不产生毛玻璃
+   - 无过渡、无动画，轻量不卡顿
+   仅保留本扩展功能所需的最小结构规则。
+   ============================================================ */
+
+/* 面板内禁止一切过渡/动画，降低开销 */
+#ctb-extension-panel,
+#ctb-extension-panel * {
+    transition: none !important;
+    animation: none !important;
+}
+
+/* ---------- 面板容器 ---------- */
+#ctb-extension-panel {
+    margin: 10px 0;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+/* ---------- 内容区：不覆盖原生 display（初始收起），子元素用间距堆叠 ---------- */
+#ctb-extension-panel .ctb-panel-content {
+    padding: 12px;
+}
+
+#ctb-extension-panel .ctb-panel-content > * + * {
+    margin-top: 10px;
+}
+
+/* ---------- 说明文字 ---------- */
+.ctb-hint {
+    font-size: 12px;
+    opacity: 0.8;
+    line-height: 1.5;
+}
+
+/* ---------- 刷新按钮禁用态 ---------- */
+.ctb-refresh-btn.ctb-refreshing {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* ---------- 绑定列表 ---------- */
+.ctb-binding-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 380px;
+    overflow-y: auto;
+    padding-right: 4px;
+    /* Firefox 轻量滚动条，颜色跟随主题 */
+    scrollbar-width: thin;
+    scrollbar-color: var(--SmartThemeBorderColor) transparent;
+}
+
+.ctb-binding-list::-webkit-scrollbar {
+    width: 5px;
+}
+
+.ctb-binding-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.ctb-binding-list::-webkit-scrollbar-thumb {
+    background: var(--SmartThemeBorderColor);
+    border-radius: 3px;
+}
+
+/* 角色名：单行省略，不换行 */
+.ctb-char-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 当前角色高亮：主题文字色描边（清晰、跟随主题） */
+.ctb-binding-row.ctb-current {
+    outline: 1px solid var(--SmartThemeBodyColor);
+    outline-offset: 1px;
+}
+
+/* ---------- 空状态 ---------- */
+.ctb-empty {
+    text-align: center;
+    padding: 24px;
+    opacity: 0.7;
+    font-size: 13px;
+}
