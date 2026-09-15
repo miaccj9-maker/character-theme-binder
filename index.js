@@ -20,6 +20,16 @@ if (!extension_settings[MODULE_NAME]) {
 const settings = extension_settings[MODULE_NAME];
 let themeList = [];
 let panelContent = null;
+// 主题选项缓存：themeList 变化时重建，行创建时深拷贝，避免角色多时重复创建 O(角色×主题) 个节点
+let themeOptionCache = null;
+function buildThemeOptionCache() {
+    themeOptionCache = themeList.map(t => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = t;
+        return opt;
+    });
+}
 
 // ========== 工具函数 ==========
 
@@ -61,16 +71,22 @@ async function fetchThemeList() {
 
     // 方式2：从设置页面的主题下拉框读取（包含所有内置主题）
     try {
-        const selects = document.querySelectorAll('select');
-        for (const sel of selects) {
-            const id = (sel.id || '').toLowerCase();
-            const name = (sel.name || '').toLowerCase();
-            if (id.includes('theme') || name.includes('theme')) {
-                Array.from(sel.options).forEach(opt => {
-                    if (opt.value) themes.add(opt.value);
-                });
-                break;
+        let sel = document.getElementById('themes');
+        if (!sel) {
+            const selects = document.querySelectorAll('select');
+            for (const s of selects) {
+                const id = (s.id || '').toLowerCase();
+                const name = (s.name || '').toLowerCase();
+                if (id.includes('theme') || name.includes('theme')) {
+                    sel = s;
+                    break;
+                }
             }
+        }
+        if (sel) {
+            Array.from(sel.options).forEach(opt => {
+                if (opt.value) themes.add(opt.value);
+            });
         }
     } catch (e) {}
 
@@ -146,12 +162,12 @@ function createBindingRow(charName) {
     defaultOpt.textContent = '— 不绑定 —';
     themeSelect.appendChild(defaultOpt);
 
-    themeList.forEach(theme => {
-        const opt = document.createElement('option');
-        opt.value = theme;
-        opt.textContent = theme;
-        themeSelect.appendChild(opt);
-    });
+    if (!themeOptionCache || themeOptionCache.length !== themeList.length) {
+        buildThemeOptionCache();
+    }
+    for (const tpl of themeOptionCache) {
+        themeSelect.appendChild(tpl.cloneNode(true));
+    }
 
     themeSelect.value = settings.bindings[charName] || '';
 
@@ -190,13 +206,16 @@ function renderBindingList() {
         return;
     }
 
+    // DocumentFragment 一次性插入，避免逐个 appendChild 反复触发布局重排（角色多时尤其明显）
+    const fragment = document.createDocumentFragment();
     characters.forEach(charName => {
         const row = createBindingRow(charName);
         if (charName === currentChar) {
             row.classList.add('ctb-current');
         }
-        listContainer.appendChild(row);
+        fragment.appendChild(row);
     });
+    listContainer.appendChild(fragment);
 
     // 列表已重建，重置高亮缓存，允许下次消息更新高亮
     lastHighlightChar = null;
