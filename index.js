@@ -34,10 +34,20 @@ function buildThemeOptionCache() {
 
 // ========== 工具函数 ==========
 
+// [性能优化] 缓存当前角色名。CHARACTER_MESSAGE_RENDERED 在每条消息渲染时都会触发，
+// 旧实现每次回调都调 getContext().name2，流式/长聊天下高频累积。只在 CHAT_CHANGED 时失效。
+let cachedCharName = null;
+
+function invalidateCharCache() {
+    cachedCharName = null;
+}
+
 function getCurrentCharacter() {
+    if (cachedCharName !== null) return cachedCharName;
     const ctx = getContext();
     // 1.18+：characterId 是数组下标，角色名用 name2
-    return ctx.name2 || '';
+    cachedCharName = ctx.name2 || '';
+    return cachedCharName;
 }
 
 function getAllCharacters() {
@@ -106,6 +116,7 @@ async function fetchThemeList() {
 
 // 应用主题：通过酒馆原生主题下拉框触发切换（ST 1.18 起主题以 CSS 变量方式应用，无 #theme-css 链接）
 let themeSelectEl = null; // 缓存主题下拉引用，避免每次角色切换都查 DOM
+let lastAppliedTheme = null; // [性能优化] 记录上一次成功应用的主题，避免重复触发原生 change
 
 function getThemeSelect() {
     if (themeSelectEl && themeSelectEl.isConnected) return themeSelectEl;
@@ -128,10 +139,17 @@ function applyTheme(themeName) {
         }
         // 已是目标主题：直接返回，避免无谓的主题重载
         // （切回同一角色 / 重复触发事件时这是最大的卡顿源）
-        if (select.value === themeName) return true;
+        if (select.value === themeName) {
+            lastAppliedTheme = themeName;
+            return true;
+        }
+        // [性能优化] 内存去重：本次要应用的主题与上一次完全相同，说明原生 change 已生效，
+        // 即便 select.value 因其它原因偏移也不再次触发重操作（读 CSS、改变量、存设置）。
+        if (themeName === lastAppliedTheme) return true;
         // 触发酒馆原生 change 事件：写入 power_user.theme、应用主题并保存设置
         select.value = themeName;
         $(select).trigger('change');
+        lastAppliedTheme = themeName;
         return true;
     } catch (e) {
         console.warn(`[${MODULE_NAME}] 应用主题失败:`, e);
@@ -341,24 +359,35 @@ export async function init() {
     // 加载主题列表
     await fetchThemeList();
 
+    // [性能优化] 用 requestIdleCallback 把列表构建推到浏览器空闲期，
+    // 角色多×主题多时（O(角色×主题) 个 option 节点）不再阻塞酒馆启动/首屏渲染。
+    const scheduleRender = () => {
+        if (typeof requestIdleCallback === 'function') {
+            requestIdleCallback(renderBindingList, { timeout: 1500 });
+        } else {
+            setTimeout(renderBindingList, 0);
+        }
+    };
+
     // 渲染绑定列表
-    renderBindingList();
+    scheduleRender();
 
     // 角色切换：防抖合并（连续快速切换角色时只应用最后一次），延迟确保角色上下文已更新
     let themeApplyTimer = null;
     eventSource.on(event_types.CHAT_CHANGED, () => {
+        invalidateCharCache(); // 角色可能切换，失效角色名缓存
         if (themeApplyTimer) clearTimeout(themeApplyTimer);
         themeApplyTimer = setTimeout(onCharacterChanged, 150);
     });
 
-    // 角色消息渲染：只更新高亮类，不再重建整个列表（避免每次消息都卡顿）
+    // 角色消息渲染：只更新高亮类（角色名已走缓存，此处几乎零开销），不再重建整个列表
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, updateCurrentHighlight);
 
     // 角色列表加载/变化时刷新绑定列表（防抖，避免加载过程中重复重建）
     let charListTimer = null;
     eventSource.on(event_types.CHARACTER_PAGE_LOADED, () => {
         if (charListTimer) clearTimeout(charListTimer);
-        charListTimer = setTimeout(renderBindingList, 150);
+        charListTimer = setTimeout(scheduleRender, 150);
     });
 
     // 兜底：页面初始化时角色数据/主题下拉可能稍后填充完成，延迟重渲染一次；
@@ -367,7 +396,7 @@ export async function init() {
         if (themeList.length === 0) {
             await fetchThemeList();
         }
-        renderBindingList();
+        scheduleRender();
     }, 1500);
 
     console.log(`[${MODULE_NAME}] 初始化完成，已加载 ${themeList.length} 个主题`);
