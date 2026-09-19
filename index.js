@@ -7,7 +7,8 @@ import {
 import { extension_settings, getContext } from '../../../../scripts/extensions.js';
 
 const MODULE_NAME = 'character-theme-binder';
-const MODULE_VERSION = '1.1.1';
+const MODULE_VERSION = '1.2.0';
+const THEME_FETCH_TIMEOUT = 3000; // 主题列表接口超时（毫秒），防止本地服务挂起时阻塞扩展初始化
 
 // 初始化扩展设置
 if (!extension_settings[MODULE_NAME]) {
@@ -53,10 +54,17 @@ function getAllCharacters() {
 async function fetchThemeList() {
     const themes = new Set();
 
-    // 方式1：API 获取用户上传的主题
+    // 方式1：API 获取用户上传的主题（带超时，防止本地服务挂起时 init 一直被阻塞）
     try {
-        const res = await fetch('/api/files/list?dir=themes');
-        if (res.ok) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), THEME_FETCH_TIMEOUT);
+        let res = null;
+        try {
+            res = await fetch('/api/files/list?dir=themes', { signal: ctrl.signal });
+        } finally {
+            clearTimeout(timer);
+        }
+        if (res && res.ok) {
             const data = await res.json();
             const files = Array.isArray(data) ? data : (data.files || data.items || []);
             files.forEach(f => {
@@ -91,15 +99,25 @@ async function fetchThemeList() {
     } catch (e) {}
 
     themeList = Array.from(themes).sort();
+    // 列表已确定，同步重建选项缓存（数量/内容都一致，避免按数量判断漏掉同名替换的主题）
+    buildThemeOptionCache();
     return themeList;
 }
 
 // 应用主题：通过酒馆原生主题下拉框触发切换（ST 1.18 起主题以 CSS 变量方式应用，无 #theme-css 链接）
+let themeSelectEl = null; // 缓存主题下拉引用，避免每次角色切换都查 DOM
+
+function getThemeSelect() {
+    if (themeSelectEl && themeSelectEl.isConnected) return themeSelectEl;
+    themeSelectEl = document.getElementById('themes');
+    return themeSelectEl;
+}
+
 function applyTheme(themeName) {
     if (!themeName) return false;
 
     try {
-        const select = document.getElementById('themes');
+        const select = getThemeSelect();
         if (!select) {
             console.warn(`[${MODULE_NAME}] 未找到主题下拉框 #themes`);
             return false;
@@ -108,6 +126,9 @@ function applyTheme(themeName) {
             console.warn(`[${MODULE_NAME}] 主题 "${themeName}" 不在列表中`);
             return false;
         }
+        // 已是目标主题：直接返回，避免无谓的主题重载
+        // （切回同一角色 / 重复触发事件时这是最大的卡顿源）
+        if (select.value === themeName) return true;
         // 触发酒馆原生 change 事件：写入 power_user.theme、应用主题并保存设置
         select.value = themeName;
         $(select).trigger('change');
@@ -162,9 +183,8 @@ function createBindingRow(charName) {
     defaultOpt.textContent = '— 不绑定 —';
     themeSelect.appendChild(defaultOpt);
 
-    if (!themeOptionCache || themeOptionCache.length !== themeList.length) {
-        buildThemeOptionCache();
-    }
+    // 缓存由 fetchThemeList 每次更新后同步重建，此处仅防御首次渲染前为空的情况
+    if (!themeOptionCache) buildThemeOptionCache();
     for (const tpl of themeOptionCache) {
         themeSelect.appendChild(tpl.cloneNode(true));
     }
@@ -324,9 +344,11 @@ export async function init() {
     // 渲染绑定列表
     renderBindingList();
 
-    // 角色切换：延迟执行确保角色上下文已更新；自动应用绑定主题并更新高亮
+    // 角色切换：防抖合并（连续快速切换角色时只应用最后一次），延迟确保角色上下文已更新
+    let themeApplyTimer = null;
     eventSource.on(event_types.CHAT_CHANGED, () => {
-        setTimeout(onCharacterChanged, 150);
+        if (themeApplyTimer) clearTimeout(themeApplyTimer);
+        themeApplyTimer = setTimeout(onCharacterChanged, 150);
     });
 
     // 角色消息渲染：只更新高亮类，不再重建整个列表（避免每次消息都卡顿）
@@ -339,8 +361,14 @@ export async function init() {
         charListTimer = setTimeout(renderBindingList, 150);
     });
 
-    // 兜底：页面初始化时角色数据可能稍后填充完成，延迟重渲染一次
-    setTimeout(renderBindingList, 1500);
+    // 兜底：页面初始化时角色数据/主题下拉可能稍后填充完成，延迟重渲染一次；
+    // 若主题列表为空（扩展加载过早、DOM 未就绪导致内置主题漏取），先补取再渲染
+    setTimeout(async () => {
+        if (themeList.length === 0) {
+            await fetchThemeList();
+        }
+        renderBindingList();
+    }, 1500);
 
     console.log(`[${MODULE_NAME}] 初始化完成，已加载 ${themeList.length} 个主题`);
 }
